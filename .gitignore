@@ -1,0 +1,17 @@
+# Local operating-system and editor files
+.DS_Store
+._*
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Generated figures and Julia diagnostics
+/figures/
+*.jl.cov
+*.jl.mem
+
+# Resolve dependencies for each student's Julia version from Project.toml.
+/Manifest.toml
+/Manifest-v*.toml
