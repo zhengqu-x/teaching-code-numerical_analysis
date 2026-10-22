@@ -1,13 +1,212 @@
-# Numerical Analysis: shared functions for Lectures 2-4.
+# Numerical Analysis: shared functions for Lectures 2-6.
 # Each lecture support file loads this with:
 #     include(joinpath(@__DIR__, "..", "helper.jl"))
-# Keep helper.jl at the repository root, beside Lecture2/, Lecture3/, and Lecture4/.
+# Keep helper.jl at the repository root, beside the lecture folders.
 # Loading this file imports the packages and defines functions only.
 # It does not run activities, benchmarks, checks, or figure exports.
 # Mathematical nodes x_0,...,x_n are stored at Julia indices 1,...,n+1.
 # L uses j=0,...,n; lagrange_basis retains the older one-based interface.
 using LinearAlgebra
 using Plots
+
+# APPROXIMATION, DIFFERENTIATION, AND QUADRATURE (LECTURES 5-6)
+# These routines use no additional external packages.
+"""Composite trapezoidal rule with n equal subintervals."""
+function trapezoid(f, a, b, n::Integer)
+    n >= 1 || throw(ArgumentError("n must be positive."))
+    a < b || throw(ArgumentError("Require a < b."))
+    h = (b-a)/n
+    return h*((f(a)+f(b))/2 + sum((f(a+i*h) for i in 1:n-1); init=zero(f(a))))
+end
+
+"""Composite Simpson rule. n counts subintervals and must be positive and even."""
+function simpson(f, a, b, n::Integer)
+    n >= 2 && iseven(n) || throw(ArgumentError("n must be positive and even."))
+    a < b || throw(ArgumentError("Require a < b."))
+    h = (b-a)/n
+    return h/3*(f(a)+f(b)+
+        4sum(f(a+i*h) for i in 1:2:n-1)+
+        2sum((f(a+i*h) for i in 2:2:n-2); init=zero(f(a))))
+end
+
+"""Standard normalization: Legendre P_n, Chebyshev T_n, Laguerre L_n,
+or physicists' Hermite H_n. n is the degree, not the number of terms."""
+function orthopoly(family::Symbol, n::Integer, x)
+    n >= 0 || throw(ArgumentError("The degree must be nonnegative."))
+    family in (:legendre,:chebyshev,:laguerre,:hermite) ||
+        throw(ArgumentError("Unknown polynomial family."))
+    p0 = one(x)
+    n == 0 && return p0
+    p1 = family == :laguerre ? one(x)-x : family == :hermite ? 2x : x
+    for k in 1:n-1
+        p2 = if family == :legendre
+            ((2k+1)*x*p1-k*p0)/(k+1)
+        elseif family == :chebyshev
+            2x*p1-p0
+        elseif family == :laguerre
+            ((2k+1-x)*p1-k*p0)/(k+1)
+        else
+            2x*p1-2k*p0
+        end
+        p0,p1 = p1,p2
+    end
+    return p1
+end
+
+function polynomial_design(nodes, n::Integer; basis=:monomial)
+    n >= 0 || throw(ArgumentError("The degree must be nonnegative."))
+    return [basis == :monomial ? x^j : orthopoly(basis,j,x)
+            for x in nodes, j in 0:n]
+end
+
+"""Numerical continuous projection on [-1,1]. Legendre uses weight 1;
+Chebyshev uses weight 1/sqrt(1-x^2), evaluated by x=cos(theta).
+The coefficients approximate the exact inner products using Simpson quadrature."""
+function orthogonal_projection(f, n::Integer; family=:legendre, panels=2000)
+    n >= 0 || throw(ArgumentError("The degree must be nonnegative."))
+    family in (:legendre,:chebyshev) ||
+        throw(ArgumentError("Projection supports Legendre and Chebyshev."))
+    if family == :legendre
+        return [(2j+1)/2*simpson(x -> f(x)*orthopoly(:legendre,j,x),
+                               -1.0,1.0,panels) for j in 0:n]
+    end
+    return [(j == 0 ? 1/pi : 2/pi)*
+            simpson(t -> f(cos(t))*cos(j*t),0.0,Float64(pi),panels) for j in 0:n]
+end
+
+function orthogonal_value(coefficients, x; family=:legendre)
+    isempty(coefficients) && throw(ArgumentError("At least one coefficient is required."))
+    return sum(coefficients[j+1]*orthopoly(family,j,x)
+               for j in 0:length(coefficients)-1)
+end
+
+"""Update the two orthonormal shifted-Legendre coefficients on [0,T].
+The input u is held constant on [t,T); c initially represents [0,t].
+This is the exact degree-1 HiPPO-LegS update for that held input, up to
+roundoff, not an exact integral of an arbitrary signal between samples.
+At t=0 the first interval is constant, so initialize c=[u,0].
+Only the current two floating-point coefficients are stored and overwritten.
+"""
+function hippo_linear_update!(c::AbstractVector, u::Real, t::Real, T::Real)
+    length(c) == 2 || throw(DimensionMismatch("Use c=[c_0,c_1]."))
+    isfinite(t) && isfinite(T) && 0 <= t < T ||
+        throw(ArgumentError("Require finite times with 0 <= t < T."))
+    if iszero(t)
+        c[1],c[2] = u,zero(u)
+        return c
+    end
+    alpha = t/T
+    c0,c1 = c  # Both right-hand sides use the OLD coefficients.
+    c[1] = alpha*c0+(1-alpha)*u
+    c[2] = alpha^2*c1+sqrt(3)*alpha*(1-alpha)*(u-c0)
+    return c
+end
+
+"""Online HiPPO-LegS update for any number of orthonormal coefficients.
+Hold the current input u constant on [t,T), and overwrite the current c.
+For zero-based indices i,j, c' = (-A*c+b*u)/t, where A_ii=i+1,
+A_ij=sqrt((2i+1)*(2j+1)) for i>j, A_ij=0 for i<j, b_i=sqrt(2i+1).
+Since A*e_0=b, the exact held-input step is
+c(T)=u*e_0+exp(-log(T/t)*A)*(c(t)-u*e_0).
+The matrix exponential accounts for the expanding interval and changing basis.
+At t=0, initialize [u,0,...,0]. No past samples or full integrals are needed.
+This teaching implementation forms small matrices at each step. Its working
+storage depends on length(c), never on the number of samples already seen.
+Source: Gu et al., HiPPO (2020), Appendix D.3, https://arxiv.org/abs/2008.07669.
+"""
+function hippo_update!(c::AbstractVector, u::Real, t::Real, T::Real)
+    isempty(c) && throw(ArgumentError("Store at least one coefficient."))
+    isfinite(t) && isfinite(T) && 0 <= t < T ||
+        throw(ArgumentError("Require finite times with 0 <= t < T."))
+    if iszero(t)
+        fill!(c,zero(eltype(c)))
+        c[1] = u
+        return c
+    end
+    m = length(c)
+    A = [i == j ? Float64(i) : i > j ? sqrt((2i-1)*(2j-1)) : 0.0
+         for i in 1:m, j in 1:m]
+    shifted = copy(c)
+    shifted[1] -= u
+    c .= exp(-log1p((T-t)/t)*A)*shifted
+    c[1] += u
+    return c
+end
+
+"""Reconstruct the stored history at s in [0,t], with t>0.
+c contains coefficients of sqrt(2j+1)*P_j(2s/t-1), j=0,...,length(c)-1.
+"""
+function hippo_value(c::AbstractVector, s::Real, t::Real)
+    isempty(c) && throw(ArgumentError("Store at least one coefficient."))
+    isfinite(t) && t > 0 && 0 <= s <= t ||
+        throw(ArgumentError("Require 0 <= s <= t with finite t > 0."))
+    return sum(c[j+1]*sqrt(2j+1)*orthopoly(:legendre,j,2s/t-1)
+               for j in 0:length(c)-1)
+end
+
+"""Padé [n/m] from Taylor coefficients a_0,...,a_(n+m).
+Returns (p,q) in increasing powers, with q_0=1. A singular system may
+mean that this normalized construction is unavailable; it is not regularized."""
+function pade_coefficients(a, n::Integer, m::Integer)
+    n >= 0 && m >= 0 || throw(ArgumentError("Degrees must be nonnegative."))
+    length(a) >= n+m+1 || throw(DimensionMismatch("Need n+m+1 Taylor coefficients."))
+    ak(k) = k < 0 ? zero(a[1]) : a[k+1]
+    if m == 0
+        return (p=collect(a[1:n+1]),q=[one(a[1])])
+    end
+    A = [ak(n+r-j) for r in 1:m, j in 1:m]
+    tail = A \ [-ak(n+r) for r in 1:m]
+    q = vcat(one(eltype(tail)),tail)
+    p = [sum(q[j+1]*ak(k-j) for j in 0:min(k,m)) for k in 0:n]
+    return (p=p,q=q)
+end
+
+"""Small-stencil weights: sum_j w_j f(x+h*s_j)/h^order.
+Solves polynomial moment equations; not intended for large ill-conditioned stencils."""
+function finite_difference_weights(offsets, order::Integer=1)
+    N = length(offsets)
+    0 <= order < N || throw(ArgumentError("Require 0 <= order < number of nodes."))
+    length(unique(offsets)) == N || throw(ArgumentError("Offsets must be distinct."))
+    A = [s^k for k in 0:N-1, s in float.(offsets)]
+    b = zeros(eltype(A),N)
+    b[order+1] = factorial(order)
+    return A \ b
+end
+
+function difference(f, x, h; scheme=:central)
+    h > 0 || throw(ArgumentError("h must be positive."))
+    scheme == :forward && return (f(x+h)-f(x))/h
+    scheme == :backward && return (f(x)-f(x-h))/h
+    scheme == :central && return (f(x+h)-f(x-h))/(2h)
+    scheme == :second && return (f(x+h)-2f(x)+f(x-h))/h^2
+    throw(ArgumentError("Unknown difference scheme."))
+end
+
+"""Richardson table for central first differences at h, h/2, ...
+Column j has formal order 2j for a sufficiently smooth f before roundoff dominates."""
+function richardson_table(f, x, h; levels=5)
+    levels >= 1 || throw(ArgumentError("levels must be positive."))
+    h > 0 || throw(ArgumentError("h must be positive."))
+    R = fill(NaN,levels,levels)
+    for k in 1:levels
+        R[k,1] = difference(f,x,h/2^(k-1))
+        for j in 2:k
+            R[k,j] = R[k,j-1]+(R[k,j-1]-R[k-1,j-1])/(4^(j-1)-1)
+        end
+    end
+    return R
+end
+
+"""Integrated gradients along a straight path. Supply an analytic or AD
+gradient. This helper performs quadrature only; it does not differentiate F."""
+function integrated_gradients(gradient, x, baseline, n::Integer; rule=:simpson)
+    length(x) == length(baseline) || throw(DimensionMismatch("Input and baseline sizes differ."))
+    rule in (:simpson,:trapezoid) || throw(ArgumentError("Unknown quadrature rule."))
+    delta = x-baseline
+    integrator = rule == :simpson ? simpson : trapezoid
+    return [delta[i]*integrator(t -> gradient(baseline+t*delta)[i],0.0,1.0,n)
+            for i in eachindex(x)]
+end
 
 # DATA CHECKS AND GLOBAL POLYNOMIAL INTERPOLATION
 function check_nodes(xx)
