@@ -33,6 +33,8 @@ include("Lecture2/lecture2_support.jl")
 include("Lecture3/Lecture3_support.jl")
 # or
 include("Lecture4/Lecture4_support.jl")
+# or
+include("Lecture7/Lecture7_support.jl")
 ```
 
 Loading these files defines the shared functions without running the activities.
@@ -50,11 +52,32 @@ folder instead, use `julia --project=..` and include its support file by name.
 | 2 | `Lecture2/lecture2_support.jl` | Monomial and Lagrange bases, divided differences, error bounds, Hermite interpolation |
 | 3 | `Lecture3/Lecture3_support.jl` | Five activities on Hermite, Runge, and piecewise interpolation |
 | 4 | `Lecture4/Lecture4_support.jl` | Seven activities on cubic splines, B-splines, Chebyshev nodes, and least squares |
+| 7 | `Lecture7/Lecture7_support.jl` | Nine activities on composite quadrature, endpoint corrections, Romberg, periodic integration, adaptive Simpson, Gaussian rules, and Gaussian averages |
 
 Lecture 4 Activities 1–3 cover natural and clamped cubic splines, 4–5 cover
 B-spline bases, 6 compares equispaced and Chebyshev nodes, and 7 fits a
 least-squares cubic. Its unnumbered illustration blocks reproduce the single
 cubic B-spline and ReLU Remez plots.
+
+Lecture 7 Activities 1–4 compare composite-rule error ratios, apply
+Euler–Maclaurin endpoint corrections, print Romberg error tables, and explore
+periodic trapezoidal convergence. Activity 5 examines adaptive Simpson refinement
+and a narrow peak missed by all initial samples. Activities 6–8 test Gaussian
+polynomial exactness, compare Gauss and Simpson with equal evaluation counts,
+and choose Chebyshev, Laguerre, or Hermite weights. Optional Activity 9 uses
+Gauss–Hermite quadrature to average a sigmoid output under Gaussian uncertainty.
+
+`gauss_rule(family,q)` takes the number of nodes `q`, with precision `2q-1`.
+The named weight is already included in the returned weights. For a standard
+normal expectation use `sum(weights .* g.(sqrt(2).*nodes))/sqrt(pi)`.
+Adaptive Simpson's error estimate is heuristic: `converged=true` means the local
+stopping tests passed, and does not guarantee detection of an unsampled peak.
+Romberg error tables display absolute errors with blank upper-triangle cells.
+
+Lecture 7 research readings:
+
+- Trefethen and Weideman, [The Exponentially Convergent Trapezoidal Rule](https://doi.org/10.1137/130932132), SIAM Review 2014.
+- Hensman, Matthews, and Ghahramani, [Scalable Variational Gaussian Process Classification](https://proceedings.mlr.press/v38/hensman15.html), AISTATS 2015.
 
 The Lecture 2 support file previously had a `.txt` extension. Its Julia filename
 now matches the lecture slides. `Lecture3/hermite_comparison.jl` remains a small

@@ -1,4 +1,4 @@
-# Numerical Analysis: shared functions for Lectures 2-6.
+# Numerical Analysis: shared functions for Lectures 2-7.
 # Each lecture support file loads this with:
 #     include(joinpath(@__DIR__, "..", "helper.jl"))
 # Keep helper.jl at the repository root, beside the lecture folders.
@@ -8,6 +8,125 @@
 # L uses j=0,...,n; lagrange_basis retains the older one-based interface.
 using LinearAlgebra
 using Plots
+using Printf
+
+# FURTHER QUADRATURE (LECTURE 7)
+"""Nested trapezoidal refinement and Richardson extrapolation.
+Only the lower triangle of table is defined; upper entries are NaN.
+levels rows use exactly 2^(levels-1)+1 function evaluations."""
+function romberg_table(f, a, b; levels::Integer=6)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    1 <= levels <= 20 || throw(ArgumentError("Use 1 to 20 levels."))
+    R = fill(NaN,levels,levels)
+    R[1,1] = (b-a)*(f(a)+f(b))/2
+    evaluations = 2
+    for k in 2:levels
+        nold = 2^(k-2)
+        h = (b-a)/nold
+        R[k,1] = R[k-1,1]/2 + h/2*sum(f(a+(j-0.5)*h) for j in 1:nold)
+        evaluations += nold
+        for j in 2:k
+            R[k,j] = R[k,j-1]+(R[k,j-1]-R[k-1,j-1])/(4^(j-1)-1)
+        end
+    end
+    return (table=R,evaluations=evaluations)
+end
+
+"""Print |R[k,j]-exact| for the defined lower triangle of a Romberg table.
+Undefined upper-triangle cells are blank. The numerical table is unchanged."""
+function print_romberg_errors(table::AbstractMatrix, exact; io::IO=stdout)
+    rows, cols = size(table)
+    @printf(io,"%3s","k")
+    for j in 1:cols
+        @printf(io,"%12s","j=$j")
+    end
+    println(io)
+    for k in 1:rows
+        @printf(io,"%3d",k)
+        for j in 1:cols
+            if j <= k
+                @printf(io,"%12.4e",abs(table[k,j]-exact))
+            else
+                @printf(io,"%12s","")
+            end
+        end
+        println(io)
+    end
+    return nothing
+end
+
+"""Adaptive Simpson with cached function values and local absolute budgets.
+Returns the Richardson-corrected value, the sum of |S2-S1|/15 estimates,
+function-evaluation count, accepted leaf intervals, and a convergence flag.
+The error estimate is heuristic: an unsampled peak can fool it."""
+function adaptive_simpson(f, a, b; atol=1e-8, maxdepth::Integer=20)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    isfinite(atol) && atol > 0 || throw(ArgumentError("atol must be finite and positive."))
+    0 <= maxdepth <= 50 || throw(ArgumentError("Use maxdepth between 0 and 50."))
+    evaluations = Ref(0)
+    function sample(x)
+        y = f(x)
+        isfinite(y) || throw(DomainError(x,"Nonfinite integrand value."))
+        evaluations[] += 1
+        return y
+    end
+    panel(a,b,fa,fm,fb) = (b-a)/6*(fa+4fm+fb)
+    intervals = Tuple{Float64,Float64}[]
+    function refine(a,b,fa,fm,fb,S,tol,depth)
+        local m = a+(b-a)/2
+        l, r = a+(m-a)/2, m+(b-m)/2
+        if !(a < l < m < r < b)
+            push!(intervals,(a,b))
+            return (S,Inf,false)
+        end
+        fl, fr = sample(l), sample(r)
+        SL, SR = panel(a,m,fa,fl,fm), panel(m,b,fm,fr,fb)
+        delta = SL+SR-S
+        estimate = abs(delta)/15
+        if estimate <= tol || depth == 0
+            push!(intervals,(a,b))
+            return (SL+SR+delta/15,estimate,estimate <= tol)
+        end
+        left = refine(a,m,fa,fl,fm,SL,tol/2,depth-1)
+        right = refine(m,b,fm,fr,fb,SR,tol/2,depth-1)
+        return (left[1]+right[1],left[2]+right[2],left[3] && right[3])
+    end
+    a,b = Float64(a),Float64(b)
+    m = a+(b-a)/2
+    fa,fm,fb = sample(a),sample(m),sample(b)
+    value,estimated_error,converged = refine(a,b,fa,fm,fb,
+        panel(a,b,fa,fm,fb),Float64(atol),maxdepth)
+    return (;value,estimated_error,evaluations=evaluations[],intervals,converged)
+end
+
+"""q Gaussian nodes and weights for a standard positive weight.
+:legendre on [-1,1], :chebyshev with 1/sqrt(1-x^2),
+:laguerre with exp(-x) on [0,Inf), :hermite with exp(-x^2) on R.
+The function values multiplied by the weights must NOT include the weight again.
+Uses the symmetric Jacobi matrix (Golub-Welsch); no extra package needed."""
+function gauss_rule(family::Symbol, q::Integer)
+    q >= 1 || throw(ArgumentError("q is the positive node count."))
+    family in (:legendre,:chebyshev,:laguerre,:hermite) ||
+        throw(ArgumentError("Unknown Gaussian weight family."))
+    if family == :chebyshev
+        nodes = sort([cos((2j-1)*pi/(2q)) for j in 1:q])
+        return (nodes=nodes,weights=fill(pi/q,q))
+    end
+    diagonal = family == :laguerre ? [2.0k+1 for k in 0:q-1] : zeros(q)
+    off = family == :legendre ? [k/sqrt(4.0k^2-1) for k in 1:q-1] :
+          family == :laguerre ? Float64.(1:q-1) : [sqrt(k/2) for k in 1:q-1]
+    mass = family == :legendre ? 2.0 : family == :laguerre ? 1.0 : sqrt(pi)
+    E = eigen(SymTridiagonal(diagonal,off))
+    return (nodes=E.values,weights=mass.*E.vectors[1,:].^2)
+end
+
+"""q-point Gauss-Legendre integration on a finite [a,b]."""
+function gauss_legendre(f, a, b, q::Integer)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    rule = gauss_rule(:legendre,q)
+    c, d = (a+b)/2,(b-a)/2
+    return d*sum(rule.weights.*f.(c .+ d.*rule.nodes))
+end
 
 # APPROXIMATION, DIFFERENTIATION, AND QUADRATURE (LECTURES 5-6)
 # These routines use no additional external packages.
