@@ -104,7 +104,9 @@ end
 @testset "Classroom activities run in order and independently" begin
     for (relative_path, count) in (("Lecture2/lecture2_support.jl",6),
                                     ("Lecture3/Lecture3_support.jl",5),
-                                    ("Lecture4/Lecture4_support.jl",7))
+                                    ("Lecture4/Lecture4_support.jl",7),
+                                    ("Lecture7/Lecture7_support.jl",4),
+                                    ("Lecture8/Lecture8_support.jl",8))
         path = joinpath(CODE_ROOT,relative_path)
         source = read(path,String)
         pattern = r"(?ms)^#(?: %% Activity| ACTIVITY) (\d+):[^\n]*\n.*?^[ \t]*#=\n(.*?)^[ \t]*=#"
@@ -134,6 +136,30 @@ end
     compatibility = fresh_scope(:HermiteCompatibility)
     Base.include(compatibility,joinpath(CODE_ROOT,"Lecture3","hermite_comparison.jl"))
     @test isdefined(compatibility,:plot_hermite_lagrange_sine)
+end
+
+include("adaptive_simpson.jl")
+
+
+@testset "Tensor quadrature with a rule per coordinate" begin
+    rx = mapped_gauss_rule(-1.,2.,3)
+    ry = mapped_gauss_rule(0.,2.,3)
+    polynomial(x) = x[1]^4*x[2]^2
+    r = tensor_quadrature(polynomial,[rx,ry])
+    @test r.value ≈ ((2.0^5+1)/5)*(2.0^3/3) rtol=1e-13
+    @test r.value ≈ tensor_quadrature((x,y)->x^4*y^2,rx,ry).value rtol=1e-14
+    @test r.evaluations == 9
+    rule = mapped_gauss_rule(0.,1.,3)
+    sampled = Set{NTuple{8,Float64}}()
+    calls = Ref(0)
+    counted(x) = (calls[]+=1;push!(sampled,Tuple(x));exp(sum(x)/8))
+    G = tensor_quadrature(counted,fill(rule,8))
+    @test G.evaluations == calls[] == length(sampled) == 6561
+    # Separability supplies an independent check; the helper still visits every node.
+    @test G.value ≈ sum(rule.weights.*exp.(rule.nodes./8))^8 rtol=1e-14
+    @test abs(G.value-(8expm1(1/8))^8) < 3e-11
+    @test_throws ArgumentError tensor_quadrature(sum,[])
+    @test_throws DimensionMismatch tensor_quadrature(sum,[(nodes=[0.,1.],weights=[1.])])
 end
 
 println("All teaching-code tests passed.")

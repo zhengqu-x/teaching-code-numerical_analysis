@@ -1,4 +1,4 @@
-# Numerical Analysis: shared functions for Lectures 2-6.
+# Numerical Analysis: shared functions for Lectures 2-8.
 # Each lecture support file loads this with:
 #     include(joinpath(@__DIR__, "..", "helper.jl"))
 # Keep helper.jl at the repository root, beside the lecture folders.
@@ -8,6 +8,320 @@
 # L uses j=0,...,n; lagrange_basis retains the older one-based interface.
 using LinearAlgebra
 using Plots
+using Printf
+using Random
+
+# INTEGRAL EQUATIONS AND MULTIPLE INTEGRALS (LECTURE 8)
+"""Gauss-Legendre nodes and weights on [a,b]; pass n+1 for nodes x_0,...,x_n."""
+function mapped_gauss_rule(a, b, num_nodes::Integer)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    rule = gauss_rule(:legendre,num_nodes)
+    c,d = (a+b)/2,(b-a)/2
+    return (nodes=c .+ d.*rule.nodes,weights=d.*rule.weights)
+end
+
+"""Composite Simpson nodes/weights; n is the even subinterval count."""
+function simpson_rule(a, b, n::Integer)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    n >= 2 && iseven(n) || throw(ArgumentError("n must be positive and even."))
+    h = (b-a)/n
+    coefficients = [i == 0 || i == n ? 1.0 : isodd(i) ? 4.0 : 2.0 for i in 0:n]
+    return (nodes=collect(range(a,b,length=n+1)),weights=h/3 .* coefficients)
+end
+
+"""Tensor quadrature in two variables. Each rule has nodes and weights."""
+function tensor_quadrature(f, rx, ry)
+    value = sum(rx.weights[i]*ry.weights[j]*f(rx.nodes[i],ry.nodes[j])
+                for i in eachindex(rx.nodes), j in eachindex(ry.nodes))
+    return (value=value,evaluations=length(rx.nodes)*length(ry.nodes))
+end
+
+"""Tensor quadrature for a vector-valued input x in d coordinates.
+Pass one nodes/weights rule per coordinate, for example fill(rule,d).
+Evaluate f(x) once at every tensor node, without exploiting separability.
+The three-argument method tensor_quadrature(f,rx,ry) still accepts f(x,y)."""
+function tensor_quadrature(f, rules::AbstractVector)
+    isempty(rules) && throw(ArgumentError("Provide at least one coordinate rule."))
+    all(length(r.nodes) == length(r.weights) > 0 for r in rules) ||
+        throw(DimensionMismatch("Each rule needs equally many nodes and weights."))
+    indices = Iterators.product((eachindex(r.nodes) for r in rules)...)
+    value = sum(prod(rules[k].weights[idx[k]] for k in eachindex(rules)) *
+                f([rules[k].nodes[idx[k]] for k in eachindex(rules)]) for idx in indices)
+    return (value=value,evaluations=prod(length(r.nodes) for r in rules))
+end
+
+
+"""Nystrom discretization of y(t)=integral k(t,s)y(s)ds+f(t).
+The supplied weights include the integration interval. Returns the nodal
+solution, algebraic residual, and continuous Nystrom extension evaluate(t).
+A small residual certifies only the discrete solve, not the quadrature error."""
+function nystrom_solve(kernel, f, rule)
+    nodes,weights = rule.nodes,rule.weights
+    num_nodes = length(nodes)
+    num_nodes == length(weights) && num_nodes > 0 || throw(DimensionMismatch("Check nodes and weights."))
+    B = [weights[j]*kernel(nodes[i],nodes[j]) for i in 1:num_nodes,j in 1:num_nodes]
+    A = Matrix{Float64}(I,num_nodes,num_nodes)-B
+    rhs = f.(nodes)
+    Y = A\rhs
+    evaluate(t) = f(t)+sum(weights[j]*kernel(t,nodes[j])*Y[j] for j in 1:num_nodes)
+    return (;nodes,weights,Y,evaluate,residual=norm(A*Y-rhs,Inf))
+end
+
+"""Monte Carlo integration on [0,1]^d using N iid uniform vectors.
+Uses an explicit seed and Welford's sample-variance calculation.
+The 95% interval is a CLT approximation, not a deterministic error bound."""
+function mc_unitcube(f, d::Integer, N::Integer; seed::Integer=2026)
+    d >= 1 && N >= 2 || throw(ArgumentError("Require d >= 1 and N >= 2."))
+    rng = MersenneTwister(seed)
+    average, M2 = 0.0,0.0
+    for j in 1:N
+        value = Float64(f(rand(rng,d)))
+        isfinite(value) || throw(DomainError(value,"Nonfinite integrand value."))
+        delta = value-average
+        average += delta/j
+        M2 += delta*(value-average)
+    end
+    variance = max(M2/(N-1),0.0)
+    stderr = sqrt(variance/N)
+    return (value=average,stderr=stderr,ci=(average-1.96stderr,average+1.96stderr),
+            evaluations=N)
+end
+
+# FURTHER QUADRATURE (LECTURE 7)
+"""Nested trapezoidal refinement and Richardson extrapolation.
+Only the lower triangle of table is defined; upper entries are NaN.
+levels rows use exactly 2^(levels-1)+1 function evaluations."""
+function romberg_table(f, a, b; levels::Integer=6)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    1 <= levels <= 20 || throw(ArgumentError("Use 1 to 20 levels."))
+    R = fill(NaN,levels,levels)
+    R[1,1] = (b-a)*(f(a)+f(b))/2
+    evaluations = 2
+    for k in 2:levels
+        nold = 2^(k-2)
+        h = (b-a)/nold
+        R[k,1] = R[k-1,1]/2 + h/2*sum(f(a+(j-0.5)*h) for j in 1:nold)
+        evaluations += nold
+        for j in 2:k
+            R[k,j] = R[k,j-1]+(R[k,j-1]-R[k-1,j-1])/(4^(j-1)-1)
+        end
+    end
+    return (table=R,evaluations=evaluations)
+end
+
+"""Print |R[k,j]-exact| for the defined lower triangle of a Romberg table.
+Undefined upper-triangle cells are blank. The numerical table is unchanged."""
+function print_romberg_errors(table::AbstractMatrix, exact; io::IO=stdout)
+    rows, cols = size(table)
+    @printf(io,"%3s","k")
+    for j in 1:cols
+        @printf(io,"%12s","j=$j")
+    end
+    println(io)
+    for k in 1:rows
+        @printf(io,"%3d",k)
+        for j in 1:cols
+            if j <= k
+                @printf(io,"%12.4e",abs(table[k,j]-exact))
+            else
+                @printf(io,"%12s","")
+            end
+        end
+        println(io)
+    end
+    return nothing
+end
+
+"""adaptive_simpson(f, a, b, n=2; atol=1e-8, maxdepth=20)
+
+Adaptive composite Simpson with n even subintervals on each current interval.
+Compare S_n(a,b) with S_n(a,c)+S_n(c,b)=S_{2n}(a,b), where c=(a+b)/2.
+Keep n fixed in both recursive calls and split the absolute tolerance in half.
+Reuse all coarse-grid values; each refinement samples only n new midpoints.
+The default n=2 gives the usual three-node versus five-node Simpson test.
+Returns the Richardson-corrected value, the sum of |S2-S1|/15 estimates,
+function-evaluation count, accepted leaf intervals, and a convergence flag.
+The error estimate is heuristic: an unsampled peak can fool it."""
+function adaptive_simpson(f, a, b, n::Integer=2; atol=1e-8, maxdepth::Integer=20)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    n >= 2 && iseven(n) || throw(ArgumentError("n must be at least 2 and even."))
+    isfinite(atol) && atol > 0 || throw(ArgumentError("atol must be finite and positive."))
+    0 <= maxdepth <= 50 || throw(ArgumentError("Use maxdepth between 0 and 50."))
+    evaluations = Ref(0)
+    function sample(x)
+        y = f(x)
+        isfinite(y) || throw(DomainError(x,"Nonfinite integrand value."))
+        evaluations[] += 1
+        return y
+    end
+    # Simpson weights for n+1 cached values on an equally spaced grid.
+    function composite(a,b,y)
+        total = y[1]+y[end]
+        for j in 1:n-1
+            total += (isodd(j) ? 4 : 2)*y[j+1]
+        end
+        return (b-a)/(3n)*total
+    end
+    intervals = Tuple{Float64,Float64}[]
+    function refine(x,y,S,tol,depth)
+        local a,b = first(x),last(x)
+        # Insert one midpoint between consecutive cached nodes.
+        midpoints = [x[j]+(x[j+1]-x[j])/2 for j in 1:n]
+        if !all(x[j] < midpoints[j] < x[j+1] for j in 1:n)
+            push!(intervals,(a,b))
+            return (S,Inf,false)
+        end
+        fine_x = Vector{Float64}(undef,2n+1)
+        fine_y = similar(y,2n+1)
+        fine_x[1:2:end],fine_x[2:2:end] = x,midpoints
+        fine_y[1:2:end],fine_y[2:2:end] = y,sample.(midpoints)
+        # The first and last n+1 entries are the two child grids.
+        xl,xr = view(fine_x,1:n+1),view(fine_x,n+1:2n+1)
+        yl,yr = view(fine_y,1:n+1),view(fine_y,n+1:2n+1)
+        local c = fine_x[n+1]
+        SL, SR = composite(a,c,yl),composite(c,b,yr)
+        delta = SL+SR-S
+        estimate = abs(delta)/15
+        if estimate <= tol || depth == 0
+            push!(intervals,(a,b))
+            return (SL+SR+delta/15,estimate,estimate <= tol)
+        end
+        left = refine(xl,yl,SL,tol/2,depth-1)
+        right = refine(xr,yr,SR,tol/2,depth-1)
+        return (left[1]+right[1],left[2]+right[2],left[3] && right[3])
+    end
+    a,b = Float64(a),Float64(b)
+    x = collect(range(a,b,length=n+1))
+    if !all(x[j] < x[j+1] for j in 1:n)
+        # There are too few representable points for the requested grid.
+        value = (b-a)/2*(sample(a)+sample(b))
+        return (value=value,estimated_error=Inf,evaluations=evaluations[],
+                intervals=[(a,b)],converged=false)
+    end
+    y = sample.(x)
+    value,estimated_error,converged = refine(x,y,composite(a,b,y),Float64(atol),maxdepth)
+    return (;value,estimated_error,evaluations=evaluations[],intervals,converged)
+end
+
+"""uniform_simpson(f, a, b, n=4; atol=1e-8, maxlevels=20)
+
+Double an initially even global subinterval count n until |S_2n-S_n|/15 <= atol.
+Reuse all sampled values and return the Richardson-corrected approximation.
+The history records cumulative evaluations and estimated errors at each level.
+As with adaptive_simpson, the estimate is heuristic, not a certified bound."""
+function uniform_simpson(f, a, b, n::Integer=4; atol=1e-8, maxlevels::Integer=20)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    n >= 2 && iseven(n) || throw(ArgumentError("n must be at least 2 and even."))
+    isfinite(atol) && atol > 0 || throw(ArgumentError("atol must be finite and positive."))
+    maxlevels >= 1 || throw(ArgumentError("maxlevels must be positive."))
+    evaluations = 0
+    function sample(x)
+        value = f(x)
+        isfinite(value) || throw(DomainError(x,"Nonfinite integrand value."))
+        evaluations += 1
+        return value
+    end
+    function from_values(y)
+        m = length(y)-1
+        total = y[1]+y[end]
+        for j in 1:m-1
+            total += (isodd(j) ? 4 : 2)*y[j+1]
+        end
+        return (b-a)*total/(3m)
+    end
+    y = sample.(range(Float64(a),Float64(b),length=n+1))
+    coarse = from_values(y)
+    history = NamedTuple[]
+    for level in 1:maxlevels
+        refined = Vector{Float64}(undef,2n+1)
+        refined[1:2:end] = y
+        refined[2:2:end] = [sample(a+(j-0.5)*(b-a)/n) for j in 1:n]
+        fine = from_values(refined)
+        delta = fine-coarse
+        estimated_error = abs(delta)/15
+        value = fine+delta/15
+        n *= 2
+        push!(history,(n=n,calls=evaluations,estimated_error=estimated_error,value=value))
+        if estimated_error <= atol || level == maxlevels
+            return (value=value,estimated_error=estimated_error,evaluations=evaluations,
+                    subintervals=n,converged=estimated_error <= atol,history=history)
+        end
+        y, coarse = refined, fine
+    end
+end
+
+
+"""Gaussian nodes and weights for a standard positive weight.
+Pass n+1 as num_nodes for nodes x_0,...,x_n (precision 2n+1).
+:legendre on [-1,1], :chebyshev with 1/sqrt(1-x^2),
+:laguerre with exp(-x) on [0,Inf), :hermite with exp(-x^2) on R.
+The function values multiplied by the weights must NOT include the weight again.
+Uses the symmetric Jacobi matrix (Golub-Welsch); no extra package needed."""
+function gauss_rule(family::Symbol, num_nodes::Integer)
+    num_nodes >= 1 || throw(ArgumentError("num_nodes is the positive node count."))
+    family in (:legendre,:chebyshev,:laguerre,:hermite) ||
+        throw(ArgumentError("Unknown Gaussian weight family."))
+    if family == :chebyshev
+        nodes = sort([cos((2j-1)*pi/(2num_nodes)) for j in 1:num_nodes])
+        return (nodes=nodes,weights=fill(pi/num_nodes,num_nodes))
+    end
+    diagonal = family == :laguerre ? [2.0k+1 for k in 0:num_nodes-1] : zeros(num_nodes)
+    off = family == :legendre ? [k/sqrt(4.0k^2-1) for k in 1:num_nodes-1] :
+          family == :laguerre ? Float64.(1:num_nodes-1) : [sqrt(k/2) for k in 1:num_nodes-1]
+    mass = family == :legendre ? 2.0 : family == :laguerre ? 1.0 : sqrt(pi)
+    E = eigen(SymTridiagonal(diagonal,off))
+    return (nodes=E.values,weights=mass.*E.vectors[1,:].^2)
+end
+
+"""Gauss-Legendre integration on [a,b]; pass n+1 for nodes x_0,...,x_n."""
+function gauss_legendre(f, a, b, num_nodes::Integer)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    rule = gauss_rule(:legendre,num_nodes)
+    c, d = (a+b)/2,(b-a)/2
+    return d*sum(rule.weights.*f.(c .+ d.*rule.nodes))
+end
+
+"""Lanczos Gaussian quadrature for z' f(A) z, with real symmetric A.
+For log, A must be positive definite. Stores at most m Lanczos vectors and
+uses two passes of reorthogonalization for this classroom example.
+Returns the approximation and the Gaussian rule for the probe's spectral measure."""
+function lanczos_quadrature(f, A::AbstractMatrix{<:Real}, z::AbstractVector{<:Real}, m::Integer)
+    size(A,1) == size(A,2) == length(z) || throw(DimensionMismatch("A and z must agree."))
+    issymmetric(A) || throw(ArgumentError("A must be real symmetric."))
+    1 <= m <= length(z) || throw(ArgumentError("Use 1 <= m <= length(z)."))
+    mass = dot(z,z)
+    isfinite(mass) && mass > 0 || throw(ArgumentError("z must be nonzero and finite."))
+    Q = zeros(length(z),m)
+    q = Float64.(z)/sqrt(mass)
+    previous = zeros(length(z))
+    alpha, beta = Float64[], Float64[]
+    beta_previous = 0.0
+    for j in 1:m
+        Q[:,j] = q
+        Aq = A*q
+        r = Aq-beta_previous*previous
+        aj = dot(q,r)
+        r -= aj*q
+        # Two passes reduce loss of orthogonality in small finite-precision examples.
+        for pass in 1:2
+            for i in 1:j
+                qi = view(Q,:,i)
+                r -= dot(qi,r)*qi
+            end
+        end
+        push!(alpha,aj)
+        bj = norm(r)
+        if j == m || bj <= 100eps(Float64)*max(norm(Aq),1.0)
+            break
+        end
+        push!(beta,bj)
+        previous,q = q,r/bj
+        beta_previous = bj
+    end
+    E = eigen(SymTridiagonal(alpha,beta))
+    weights = mass.*E.vectors[1,:].^2
+    return (value=sum(weights.*f.(E.values)),nodes=E.values,weights=weights)
+end
 
 # APPROXIMATION, DIFFERENTIATION, AND QUADRATURE (LECTURES 5-6)
 # These routines use no additional external packages.
