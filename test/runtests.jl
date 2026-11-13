@@ -106,7 +106,8 @@ end
                                     ("Lecture3/Lecture3_support.jl",5),
                                     ("Lecture4/Lecture4_support.jl",7),
                                     ("Lecture7/Lecture7_support.jl",4),
-                                    ("Lecture8/Lecture8_support.jl",8))
+                                    ("Lecture8/Lecture8_support.jl",6),
+                                    ("Lecture9/Lecture9_support.jl",6))
         path = joinpath(CODE_ROOT,relative_path)
         source = read(path,String)
         pattern = r"(?ms)^#(?: %% Activity| ACTIVITY) (\d+):[^\n]*\n.*?^[ \t]*#=\n(.*?)^[ \t]*=#"
@@ -161,5 +162,7 @@ include("adaptive_simpson.jl")
     @test_throws ArgumentError tensor_quadrature(sum,[])
     @test_throws DimensionMismatch tensor_quadrature(sum,[(nodes=[0.,1.],weights=[1.])])
 end
+
+include("stationary_iteration.jl")
 
 println("All teaching-code tests passed.")

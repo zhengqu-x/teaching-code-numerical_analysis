@@ -1,4 +1,4 @@
-# Numerical Analysis: shared functions for Lectures 2-8.
+# Numerical Analysis: shared functions for Lectures 2-9.
 # Each lecture support file loads this with:
 #     include(joinpath(@__DIR__, "..", "helper.jl"))
 # Keep helper.jl at the repository root, beside the lecture folders.
@@ -11,7 +11,80 @@ using Plots
 using Printf
 using Random
 
-# INTEGRAL EQUATIONS AND MULTIPLE INTEGRALS (LECTURE 8)
+# STATIONARY LINEAR ITERATIONS (LECTURE 9)
+function _check_stationary_matrix(A)
+    n,m = size(A)
+    n == m && n > 0 || throw(DimensionMismatch("A must be nonempty and square."))
+    all(isfinite,A) || throw(ArgumentError("A must be finite."))
+    all(!iszero(A[i,i]) for i in 1:n) || throw(ArgumentError("Diagonal entries must be nonzero."))
+    return n
+end
+
+"""Iteration matrix for Jacobi or Gauss-Seidel, with A=D-L-U.
+Uses diagonal/triangular solves; no explicit matrix inverse is formed."""
+function stationary_matrix(A::AbstractMatrix{<:Real}; method::Symbol=:jacobi)
+    _check_stationary_matrix(A)
+    method in (:jacobi,:gauss_seidel) || throw(ArgumentError("Use :jacobi or :gauss_seidel."))
+    if method == :jacobi
+        D = Diagonal(diag(A))
+        return -(D \ (A-D))
+    end
+    return -(LowerTriangular(A) \ triu(A,1))
+end
+
+"""Solve A*x=b by Jacobi or Gauss-Seidel sweeps.
+Stop when norm(b-A*x,Inf) <= atol + rtol*norm(b,Inf), or at maxiter.
+The flag converged records this residual test, not a forward-error bound.
+Stores iterates for classroom plots; intended for small teaching examples.
+The initial iterate is column 1 of iterates and entry 1 of residuals."""
+function stationary_solve(A::AbstractMatrix{<:Real}, b::AbstractVector{<:Real};
+        method::Symbol=:jacobi, x0=zeros(size(A,1)), rtol=1e-10, atol=0.0,
+        maxiter::Integer=200)
+    n = _check_stationary_matrix(A)
+    length(b) == length(x0) == n || throw(DimensionMismatch("Check b and x0 lengths."))
+    method in (:jacobi,:gauss_seidel) || throw(ArgumentError("Use :jacobi or :gauss_seidel."))
+    all(isfinite,b) && all(isfinite,x0) || throw(ArgumentError("Vectors must be finite."))
+    isfinite(rtol) && isfinite(atol) && rtol >= 0 && atol >= 0 ||
+        throw(ArgumentError("Tolerances must be finite and nonnegative."))
+    maxiter >= 0 || throw(ArgumentError("maxiter must be nonnegative."))
+    numbertype = promote_type(Float64,eltype(A),eltype(b),eltype(x0))
+    Aw,rhs,x = numbertype.(A),numbertype.(b),numbertype.(x0)
+    threshold = atol+rtol*norm(rhs,Inf)
+    states = [copy(x)]
+    residuals = [norm(rhs-Aw*x,Inf)]
+    step_norms = [zero(eltype(x))]
+    status = residuals[end] <= threshold ? :residual : :maxiter
+    if status != :residual
+        for iteration in 1:maxiter
+            old = copy(x)
+            for i in 1:n
+                total = zero(eltype(x))
+                for j in 1:i-1
+                    total += Aw[i,j]*(method == :jacobi ? old[j] : x[j])
+                end
+                for j in i+1:n
+                    total += Aw[i,j]*old[j]
+                end
+                x[i] = (rhs[i]-total)/Aw[i,i]
+            end
+            push!(states,copy(x))
+            push!(step_norms,norm(x-old,Inf))
+            push!(residuals,norm(rhs-Aw*x,Inf))
+            if !all(isfinite,x) || !isfinite(residuals[end])
+                status = :nonfinite
+                break
+            elseif residuals[end] <= threshold
+                status = :residual
+                break
+            end
+        end
+    end
+    return (x=copy(x),iterations=length(states)-1,converged=status == :residual,
+            status=status,threshold=threshold,residuals=residuals,step_norms=step_norms,
+            iterates=hcat(states...))
+end
+
+# INTEGRAL EQUATIONS AND MULTIPLE INTEGRALS (LECTURES 8-9)
 """Gauss-Legendre nodes and weights on [a,b]; pass n+1 for nodes x_0,...,x_n."""
 function mapped_gauss_rule(a, b, num_nodes::Integer)
     isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))

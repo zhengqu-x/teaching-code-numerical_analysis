@@ -37,6 +37,8 @@ include("Lecture4/Lecture4_support.jl")
 include("Lecture7/Lecture7_support.jl")
 # or
 include("Lecture8/Lecture8_support.jl")
+# or
+include("Lecture9/Lecture9_support.jl")
 ```
 
 Loading these files defines the shared functions without running the activities.
@@ -55,7 +57,8 @@ folder instead, use `julia --project=..` and include its support file by name.
 | 3 | `Lecture3/Lecture3_support.jl` | Five activities on Hermite, Runge, and piecewise interpolation |
 | 4 | `Lecture4/Lecture4_support.jl` | Seven activities on cubic splines, B-splines, Chebyshev nodes, and least squares |
 | 7 | `Lecture7/Lecture7_support.jl` | Four activities on composite quadrature, endpoint corrections, Romberg, and periodic integration |
-| 8 | `Lecture8/Lecture8_support.jl` | Eight activities on adaptive Simpson, Gaussian rules, integral equations, tensor quadrature and Monte Carlo, plus a 784-dimensional research example |
+| 8 | `Lecture8/Lecture8_support.jl` | Six activities on adaptive Simpson, Gaussian rules, Gaussian averages and integral equations |
+| 9 | `Lecture9/Lecture9_support.jl` | Six activities on tensor quadrature, Monte Carlo, Jacobi, Gauss-Seidel and graph propagation |
 
 Lecture 4 Activities 1–3 cover natural and clamped cubic splines, 4–5 cover
 B-spline bases, 6 compares equispaced and Chebyshev nodes, and 7 fits a
@@ -76,29 +79,34 @@ blocks in the same order as the slides:
 3. Romberg and a Smoothness Test.
 4. Periodic Endpoints.
 
-## Lecture 8 (6 November 2026)
+## Lectures 8 and 9
 
-Load `include("Lecture8/Lecture8_support.jl")`. This file includes `helper.jl`
-and leaves all eight activities in separate commented blocks, in slide order:
+Lecture 8 has six activities: adaptive Simpson, Gaussian precision, Gauss versus
+composite Simpson, weighted Gaussian rules, Gaussian averages, and Nystrom
+integral equations. The residual of the discrete solve and the error against
+the known continuous solution are reported separately.
 
-1. Adaptive Simpson and a narrow peak that the initial samples miss.
-2. Gaussian polynomial precision.
-3. Gauss-Legendre versus composite Simpson at equal evaluation counts.
-4. Chebyshev, Laguerre and Hermite weights.
-5. A Gaussian average of a classifier output.
-6. Nystrom discretization of an integral equation with an exact reference.
-7. Tensor quadrature for a double integral.
-8. Monte Carlo on an eight-dimensional cube, compared with three Gauss nodes per coordinate (6561 evaluations for each method): a smooth integrand and a discontinuous threshold probability. The latter includes 100 separate Monte Carlo runs to show variability.
+Lecture 9 has six activities in slide order:
 
-All activities use the shared functions in `helper.jl`. Monte Carlo
-confidence intervals are approximate; a small algebraic residual certifies
-only the discrete linear solve, not the integral-equation approximation.
-The research slides connect quadrature to neural operators (JMLR 2023)
-and Monte Carlo class-probability estimation under Gaussian input noise
-(Cohen et al., ICML 2019). A separate research example after Activity 8 samples
-a 784-dimensional Gaussian integral for an illustrative linear classifier
-and plots the estimates against an independent reference.
-Jacobi and Gauss-Seidel follow next time.
+1. Tensor Simpson and Gauss quadrature on a rectangle.
+2. Monte Carlo and tensor Gauss for a smooth eight-dimensional integral.
+3. A threshold probability, including variation across 100 separate runs.
+4. Jacobi and Gauss-Seidel on a four-equation system.
+5. Spectral radii, a positive definite matrix where Jacobi diverges, and residual versus error.
+6. Graph-prediction propagation and two solvers for the same fixed-point system.
+
+An optional example after Activity 3 samples all 784 coordinates of a noisy
+classifier input. Monte Carlo confidence intervals are approximate. Graph
+propagation is an illustrative numerical example with supplied initial scores,
+not a trained APPNP model. It uses row normalization; the cited APPNP paper
+uses symmetric normalization.
+
+The shared `stationary_solve` stops on `norm(b-A*x,Inf) <= atol + rtol*norm(b,Inf)`.
+Its flag records a residual test, not a forward-error certificate. Iterates are
+stored as columns for classroom plots; column 1 is the initial vector.
+Use `stationary_matrix` to inspect either iteration matrix. The notation is
+`A=D-L-U`; no explicit inverse is formed by these helpers.
+
 
 ## Notation and interpretation
 
@@ -149,3 +157,8 @@ The latter two commands export figures to `figures/Lecture3/` and
 `figures/Lecture4/`. Optional exports in the classroom files use the same
 `figures/` folder. Generated figures and local metadata are excluded from Git.
 No script needs the original Dropbox folder or writes into the lecture sources.
+
+## Additional Lecture 9 research readings
+
+- Klicpera, Bojchevski and Guennemann, [Predict then Propagate](https://arxiv.org/abs/1810.05997), ICLR 2019.
+- Jie Chen, [Graph Neural Preconditioners for Iterative Solutions of Sparse Linear Systems](https://proceedings.iclr.cc/paper_files/paper/2025/file/3bb7e33e4da1fd19ebc6f0899e45a9dc-Paper-Conference.pdf), ICLR 2025.
