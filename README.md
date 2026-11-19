@@ -39,6 +39,8 @@ include("Lecture7/Lecture7_support.jl")
 include("Lecture8/Lecture8_support.jl")
 # or
 include("Lecture9/Lecture9_support.jl")
+# or
+include("Lecture10/Lecture10_support.jl")
 ```
 
 Loading these files defines the shared functions without running the activities.
@@ -59,6 +61,7 @@ folder instead, use `julia --project=..` and include its support file by name.
 | 7 | `Lecture7/Lecture7_support.jl` | Four activities on composite quadrature, endpoint corrections, Romberg, and periodic integration |
 | 8 | `Lecture8/Lecture8_support.jl` | Six activities on adaptive Simpson, Gaussian rules, Gaussian averages and integral equations |
 | 9 | `Lecture9/Lecture9_support.jl` | Six activities on tensor quadrature, Monte Carlo, Jacobi, Gauss-Seidel and graph propagation |
+| 10 | `Lecture10/Lecture10_support.jl` | Eight activities on spectral radius, convergence orders, bisection, nonlinear fixed points, Newton and equilibrium layers |
 
 Lecture 4 Activities 1–3 cover natural and clamped cubic splines, 4–5 cover
 B-spline bases, 6 compares equispaced and Chebyshev nodes, and 7 fits a
@@ -162,3 +165,26 @@ No script needs the original Dropbox folder or writes into the lecture sources.
 
 - Klicpera, Bojchevski and Guennemann, [Predict then Propagate](https://arxiv.org/abs/1810.05997), ICLR 2019.
 - Jie Chen, [Graph Neural Preconditioners for Iterative Solutions of Sparse Linear Systems](https://proceedings.iclr.cc/paper_files/paper/2025/file/3bb7e33e4da1fd19ebc6f0899e45a9dc-Paper-Conference.pdf), ICLR 2025.
+
+## Lecture 10 (20 November 2026)
+
+Activities 1–8 follow the slides: the positive-definite Jacobi counterexample;
+model convergence orders; bisection; scalar Newton versus bisection; Newton
+with different starting points; the three-variable fixed-point map; Newton
+for the same system; and a two-state equilibrium layer. The last activity
+uses supplied parameters and does not train a model.
+
+The shared helpers are `bisect_root`, `fixedpoint_solve`, `newton_solve`, and
+`newton_system`. Bisection stops on the bracket half-width; its `iterations`
+counts bracket reductions and its history also contains the initial midpoint.
+A supplied `contraction=q` lets `fixedpoint_solve` stop on a computable error
+bound, conditional on the proven contraction and self-mapping hypotheses.
+Without that hypothesis, its flag records only a residual test. Newton also
+uses a residual test, handles a zero derivative or singular Jacobian, and
+forms no explicit matrix inverse.
+
+The square-root map in Activities 6/7 selects the branch `x[2] >= -0.1`;
+it does not represent all roots of the original three-equation system.
+
+Reading: Bai, Kolter and Koltun, [Deep Equilibrium Models](https://proceedings.neurips.cc/paper/2019/hash/01386bd6d8e091c2ab4c7c7de644d37b-Abstract.html), NeurIPS 2019;
+Bai, Koltun and Kolter, [Stabilizing Equilibrium Models by Jacobian Regularization](https://proceedings.mlr.press/v139/bai21b.html), ICML 2021.

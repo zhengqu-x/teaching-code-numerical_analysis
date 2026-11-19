@@ -1,4 +1,4 @@
-# Numerical Analysis: shared functions for Lectures 2-9.
+# Numerical Analysis: shared functions for Lectures 2-10.
 # Each lecture support file loads this with:
 #     include(joinpath(@__DIR__, "..", "helper.jl"))
 # Keep helper.jl at the repository root, beside the lecture folders.
@@ -10,6 +10,202 @@ using LinearAlgebra
 using Plots
 using Printf
 using Random
+
+# NONLINEAR EQUATIONS AND FIXED POINTS (LECTURE 10)
+_nl_norm(x::Real) = abs(x)
+_nl_norm(x::AbstractVector) = norm(x,Inf)
+_nl_finite(x::Real) = isfinite(x)
+_nl_finite(x::AbstractVector) = all(isfinite,x)
+_nl_history(states, x::Real) = collect(states)
+_nl_history(states, x::AbstractVector) = hcat(states...)
+_nl_same_shape(x::Real,y::Real) = true
+_nl_same_shape(x::AbstractVector,y::AbstractVector) = length(x) == length(y)
+_nl_same_shape(x,y) = false
+function _nl_options(atol,maxiter)
+    isfinite(atol) && atol > 0 || throw(ArgumentError("atol must be finite and positive."))
+    maxiter isa Integer && maxiter >= 0 || throw(ArgumentError("maxiter must be a nonnegative integer."))
+end
+
+"""Bisection on a sign-changing interval. Continuity of f is assumed.
+The returned midpoint has error at most bound=(b-a)/2 for its recorded bracket.
+A residual alone is not the stopping test. Endpoint roots return immediately."""
+function bisect_root(f,a::Real,b::Real;atol=1e-10,maxiter::Integer=100)
+    _nl_options(atol,maxiter)
+    isfinite(a) && isfinite(b) && a < b || throw(ArgumentError("Require finite a < b."))
+    left,right = promote(float(a),float(b))
+    fl,fr = f(left),f(right)
+    fl isa Real && fr isa Real && isfinite(fl) && isfinite(fr) ||
+        throw(ArgumentError("Endpoint function values must be finite real numbers."))
+    calls = 2
+    states = typeof(left)[]; bounds = typeof(left)[]; residuals = typeof(left)[]
+    if iszero(fl) || iszero(fr)
+        x = iszero(fl) ? left : right
+        return (x=x,iterations=0,converged=true,status=:exact_root,bound=zero(x),
+                interval=(x,x),calls=calls,iterates=[x],bounds=[zero(x)],residuals=[zero(x)])
+    end
+    signbit(fl) != signbit(fr) || throw(ArgumentError("Endpoint values must have opposite signs."))
+    status = :maxiter; x = left+(right-left)/2; bound = (right-left)/2
+    iterations = 0
+    # Record the initial midpoint (zero bracket reductions), then refine.
+    for k in 0:maxiter
+        x = left+(right-left)/2; bound = (right-left)/2
+        fx = f(x); calls += 1
+        fx isa Real || throw(ArgumentError("Function values must be real."))
+        push!(states,x); push!(bounds,bound); push!(residuals,abs(fx))
+        iterations = k
+        if !isfinite(fx)
+            status = :nonfinite; break
+        elseif iszero(fx)
+            status = :exact_root; bound = zero(bound); bounds[end] = bound
+            left = right = x; break
+        elseif bound <= atol
+            status = :interval; break
+        elseif x == left || x == right
+            status = :stagnation; break
+        elseif k == maxiter
+            break
+        end
+        if signbit(fl) == signbit(fx)
+            left,fl = x,fx
+        else
+            right,fr = x,fx
+        end
+    end
+    return (x=x,iterations=iterations,converged=status in (:exact_root,:interval),
+            status=status,bound=bound,interval=(left,right),calls=calls,
+            iterates=states,bounds=bounds,residuals=residuals)
+end
+
+"""Fixed-point iteration for a scalar or real vector.
+If contraction=q is supplied, assume T maps a complete invariant set to itself
+and has Lipschitz constant at most q<1 there. Then bounds certify solution error;
+the stopping bound is q/(1-q)*norm(x_new-x_old,Inf).
+Without q, converged records only the fixed-point residual test.
+The field certified indicates that a contraction hypothesis was supplied;
+any error certification is conditional on that hypothesis being correct.
+History includes the initial iterate. Vector iterates are stored as columns."""
+function fixedpoint_solve(T,x0::Union{Real,AbstractVector{<:Real}};
+        atol=1e-10,maxiter::Integer=200,contraction=nothing)
+    _nl_options(atol,maxiter)
+    _nl_finite(x0) || throw(ArgumentError("Initial values must be finite."))
+    x0 isa AbstractVector && isempty(x0) && throw(ArgumentError("Initial vector must be nonempty."))
+    if contraction !== nothing
+        contraction isa Real && isfinite(contraction) && 0 <= contraction < 1 ||
+            throw(ArgumentError("contraction must satisfy 0 <= q < 1."))
+    end
+    x = float.(x0); next = T(x)
+    _nl_same_shape(x,next) || throw(DimensionMismatch("T must preserve scalar/vector shape."))
+    states = [copy(x)]; residuals = [_nl_norm(next-x)]
+    step_norms = [zero(residuals[1])]
+    bounds = [contraction === nothing ? Inf : residuals[1]/(1-contraction)]
+    status = !_nl_finite(next) ? :nonfinite :
+             (contraction === nothing ? residuals[1] : bounds[1]) <= atol ?
+             (contraction === nothing ? :residual : :error_bound) : :maxiter
+    if status == :maxiter
+        for k in 1:maxiter
+            old = x; x = float.(next)
+            step = _nl_norm(x-old)
+            next = T(x)
+            _nl_same_shape(x,next) || throw(DimensionMismatch("T must preserve scalar/vector shape."))
+            push!(states,copy(x)); push!(step_norms,step)
+            push!(residuals,_nl_norm(next-x))
+            push!(bounds,contraction === nothing ? Inf : contraction/(1-contraction)*step)
+            if !_nl_finite(next) || !isfinite(residuals[end])
+                status = :nonfinite; break
+            elseif (contraction === nothing ? residuals[end] : bounds[end]) <= atol
+                status = contraction === nothing ? :residual : :error_bound; break
+            elseif iszero(step)
+                status = :stagnation; break
+            end
+        end
+    end
+    return (x=copy(x),iterations=length(states)-1,converged=status in (:residual,:error_bound),
+            status=status,iterates=_nl_history(states,x),residuals=residuals,
+            step_norms=step_norms,bounds=bounds,certified=contraction !== nothing)
+end
+
+"""Scalar Newton iteration. converged means abs(f(x)) <= atol, not a certified error bound.
+Stops on a zero derivative, nonfinite value, stagnation, or maxiter."""
+function newton_solve(f,df,x0::Real;atol=1e-12,maxiter::Integer=30)
+    _nl_options(atol,maxiter)
+    isfinite(x0) || throw(ArgumentError("Initial value must be finite."))
+    x = float(x0); fx = f(x)
+    fx isa Real || throw(ArgumentError("f must return a real number."))
+    states = [x]; residuals = [abs(fx)]; step_norms = [zero(x)]
+    status = !isfinite(fx) ? :nonfinite : abs(fx) <= atol ? :residual : :maxiter
+    if status == :maxiter
+        for k in 1:maxiter
+            derivative = df(x)
+            derivative isa Real || throw(ArgumentError("df must return a real number."))
+            if !isfinite(derivative)
+                status = :nonfinite; break
+            elseif iszero(derivative)
+                status = :zero_derivative; break
+            end
+            old = x; x = x-fx/derivative
+            if !isfinite(x)
+                status = :nonfinite; x = old; break
+            end
+            fx = f(x)
+            fx isa Real || throw(ArgumentError("f must return a real number."))
+            push!(states,x); push!(residuals,abs(fx)); push!(step_norms,abs(x-old))
+            if !isfinite(fx)
+                status = :nonfinite; break
+            elseif abs(fx) <= atol
+                status = :residual; break
+            elseif x == old
+                status = :stagnation; break
+            end
+        end
+    end
+    return (x=x,iterations=length(states)-1,converged=status == :residual,status=status,
+            iterates=states,residuals=residuals,step_norms=step_norms)
+end
+
+"""Newton iteration for F(x)=0, solving DF(x)*d=-F(x) at each step.
+No matrix inverse is formed. converged records a residual test only.
+Vector iterates are columns, including the initial vector."""
+function newton_system(F,DF,x0::AbstractVector{<:Real};atol=1e-12,maxiter::Integer=30)
+    _nl_options(atol,maxiter)
+    !isempty(x0) && all(isfinite,x0) || throw(ArgumentError("Initial vector must be nonempty and finite."))
+    x = float.(x0); fx = F(x)
+    fx isa AbstractVector && length(fx) == length(x) || throw(DimensionMismatch("F must return a vector of the same length."))
+    states = [copy(x)]; residuals = [norm(fx,Inf)]; step_norms = [zero(eltype(x))]
+    status = !all(isfinite,fx) ? :nonfinite : residuals[end] <= atol ? :residual : :maxiter
+    if status == :maxiter
+        for k in 1:maxiter
+            J = DF(x)
+            J isa AbstractMatrix && size(J) == (length(x),length(x)) || throw(DimensionMismatch("DF must return a square Jacobian."))
+            if !all(isfinite,J)
+                status = :nonfinite; break
+            end
+            step = try
+                -(J\fx)
+            catch err
+                if err isa SingularException || err isa LinearAlgebra.LAPACKException
+                    status = :singular_jacobian; break
+                end
+                rethrow()
+            end
+            old = x; x = x+step
+            if !all(isfinite,x)
+                status = :nonfinite; x = old; break
+            end
+            fx = F(x)
+            fx isa AbstractVector && length(fx) == length(x) || throw(DimensionMismatch("F must preserve vector length."))
+            push!(states,copy(x)); push!(residuals,norm(fx,Inf)); push!(step_norms,norm(x-old,Inf))
+            if !all(isfinite,fx)
+                status = :nonfinite; break
+            elseif residuals[end] <= atol
+                status = :residual; break
+            elseif x == old
+                status = :stagnation; break
+            end
+        end
+    end
+    return (x=copy(x),iterations=length(states)-1,converged=status == :residual,status=status,
+            iterates=hcat(states...),residuals=residuals,step_norms=step_norms)
+end
 
 # STATIONARY LINEAR ITERATIONS (LECTURE 9)
 function _check_stationary_matrix(A)

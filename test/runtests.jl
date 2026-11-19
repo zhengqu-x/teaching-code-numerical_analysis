@@ -107,7 +107,8 @@ end
                                     ("Lecture4/Lecture4_support.jl",7),
                                     ("Lecture7/Lecture7_support.jl",4),
                                     ("Lecture8/Lecture8_support.jl",6),
-                                    ("Lecture9/Lecture9_support.jl",6))
+                                    ("Lecture9/Lecture9_support.jl",6),
+                                    ("Lecture10/Lecture10_support.jl",8))
         path = joinpath(CODE_ROOT,relative_path)
         source = read(path,String)
         pattern = r"(?ms)^#(?: %% Activity| ACTIVITY) (\d+):[^\n]*\n.*?^[ \t]*#=\n(.*?)^[ \t]*=#"
@@ -164,5 +165,7 @@ include("adaptive_simpson.jl")
 end
 
 include("stationary_iteration.jl")
+
+include("nonlinear_equations.jl")
 
 println("All teaching-code tests passed.")
